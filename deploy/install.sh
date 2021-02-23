@@ -78,7 +78,7 @@ applyDynatraceOperator() {
   if [ "${CLI}" = "kubectl" ]; then
     "${CLI}" apply -f https://github.com/Dynatrace/dynatrace-operator/releases/latest/download/kubernetes.yaml
   else
-    "${CLI}" apply -f https://github.com/Dynatrace/dynatrace-operator/releases/latest/download/openshift.yaml
+    "${CLI}" apply -f https://github.com/Dynatrace/dynatrace-operator/releases/download/v0.1.0/openshift.yaml
   fi
 
   "${CLI}" -n dynatrace create secret generic dynakube --from-literal="apiToken=${API_TOKEN}" --from-literal="paasToken=${PAAS_TOKEN}" --dry-run -o yaml | "${CLI}" apply -f -
