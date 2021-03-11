@@ -222,6 +222,8 @@ printf "\nCreating Dynatrace namespace...\n"
 checkIfNSExists
 printf "\nApplying Dynatrace OneAgent Operator...\n"
 applyOneAgentOperator
+printf "\nSleeping for 60s to wait for operator deployment...\n"
+sleep 60
 printf "\nApplying OneAgent CustomResource...\n"
 applyOneAgentCR
 
