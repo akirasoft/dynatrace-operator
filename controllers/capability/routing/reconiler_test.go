@@ -72,7 +72,10 @@ func TestReconcile(t *testing.T) {
 			Value: testValue,
 		}
 		_, err := r.Reconcile()
+		assert.NoError(t, err)
 
+		// Reconcile twice since service is created before the stateful set is
+		_, err = r.Reconcile()
 		assert.NoError(t, err)
 
 		var customProperties corev1.Secret
@@ -85,6 +88,12 @@ func TestReconcile(t *testing.T) {
 	t.Run(`create stateful set`, func(t *testing.T) {
 		r := createDefaultReconciler(t)
 		update, err := r.Reconcile()
+
+		assert.True(t, update)
+		assert.NoError(t, err)
+
+		// Reconcile twice since service is created before the stateful set is
+		update, err = r.Reconcile()
 
 		assert.True(t, update)
 		assert.NoError(t, err)
@@ -102,6 +111,12 @@ func TestReconcile(t *testing.T) {
 	t.Run(`update stateful set`, func(t *testing.T) {
 		r := createDefaultReconciler(t)
 		update, err := r.Reconcile()
+
+		assert.True(t, update)
+		assert.NoError(t, err)
+
+		// Reconcile twice since service is created before the stateful set is
+		update, err = r.Reconcile()
 
 		assert.True(t, update)
 		assert.NoError(t, err)
@@ -126,7 +141,7 @@ func TestReconcile(t *testing.T) {
 
 		found := false
 		for _, env := range newStatefulSet.Spec.Template.Spec.Containers[0].Env {
-			if env.Name == capability.ProxyEnv {
+			if env.Name == capability.DTInternalProxy {
 				found = true
 				assert.Equal(t, testValue, env.Value)
 			}
@@ -139,18 +154,52 @@ func TestReconcile(t *testing.T) {
 		assert.True(t, update)
 		assert.NoError(t, err)
 
-		statefulSet := &appsv1.StatefulSet{}
-		err = r.Get(context.TODO(), client.ObjectKey{Name: r.Instance.Name + StatefulSetSuffix, Namespace: r.Instance.Namespace}, statefulSet)
-		assert.NotNil(t, statefulSet)
+		service := &corev1.Service{}
+		err = r.Get(context.TODO(), client.ObjectKey{Name: buildServiceName(r.Instance.Name, module), Namespace: r.Instance.Namespace}, service)
 		assert.NoError(t, err)
+		assert.NotNil(t, service)
 
 		update, err = r.Reconcile()
 		assert.True(t, update)
 		assert.NoError(t, err)
 
-		service := &corev1.Service{}
-		err = r.Get(context.TODO(), client.ObjectKey{Name: buildServiceName(r.Instance.Name, module), Namespace: r.Instance.Namespace}, service)
+		statefulSet := &appsv1.StatefulSet{}
+		err = r.Get(context.TODO(), client.ObjectKey{Name: r.Instance.Name + StatefulSetSuffix, Namespace: r.Instance.Namespace}, statefulSet)
+		assert.NotNil(t, statefulSet)
 		assert.NoError(t, err)
-		assert.NotNil(t, service)
 	})
+}
+
+func TestSetLivenessProbePort(t *testing.T) {
+	r := createDefaultReconciler(t)
+	stsProps := capability.NewStatefulSetProperties(r.Instance, &r.Instance.Spec.RoutingSpec.CapabilityProperties, "", "", "", "", "")
+	sts, err := capability.CreateStatefulSet(stsProps)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, sts)
+
+	setLivenessProbePort(r.Instance)(sts)
+
+	assert.NotEmpty(t, sts.Spec.Template.Spec.Containers)
+	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].LivenessProbe)
+	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].LivenessProbe.HTTPGet)
+	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].LivenessProbe.HTTPGet.Port)
+	assert.Equal(t, serviceTargetPort, sts.Spec.Template.Spec.Containers[0].LivenessProbe.HTTPGet.Port.String())
+}
+
+func TestSetReadinessProbePort(t *testing.T) {
+	r := createDefaultReconciler(t)
+	stsProps := capability.NewStatefulSetProperties(r.Instance, &r.Instance.Spec.RoutingSpec.CapabilityProperties, "", "", "", "", "")
+	sts, err := capability.CreateStatefulSet(stsProps)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, sts)
+
+	setReadinessProbePort(r.Instance)(sts)
+
+	assert.NotEmpty(t, sts.Spec.Template.Spec.Containers)
+	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].ReadinessProbe)
+	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet)
+	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Port)
+	assert.Equal(t, serviceTargetPort, sts.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Port.String())
 }

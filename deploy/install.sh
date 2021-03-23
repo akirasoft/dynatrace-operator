@@ -3,10 +3,10 @@
 set -e
 
 CLI="kubectl"
-ENABLE_K8S_MONITORING="false"
-SET_APP_LOG_CONTENT_ACCESS="false"
 SKIP_CERT_CHECK="false"
 ENABLE_VOLUME_STORAGE="false"
+CLUSTER_NAME_REGEX="^[-_a-zA-Z0-9][-_\.a-zA-Z0-9]*$"
+CLUSTER_NAME_LENGTH=256
 
 for arg in "$@"; do
   case $arg in
@@ -22,14 +22,6 @@ for arg in "$@"; do
     PAAS_TOKEN="$2"
     shift 2
     ;;
-  --enable-k8s-monitoring)
-    ENABLE_K8S_MONITORING="true"
-    shift
-    ;;
-  --set-app-log-content-access)
-    SET_APP_LOG_CONTENT_ACCESS="true"
-    shift
-    ;;
   --skip-cert-check)
     SKIP_CERT_CHECK="true"
     shift
@@ -37,6 +29,10 @@ for arg in "$@"; do
   --enable-volume-storage)
     ENABLE_VOLUME_STORAGE="true"
     shift
+    ;;
+  --cluster-name)
+    CLUSTER_NAME="$2"
+    shift 2
     ;;
   --openshift)
     CLI="oc"
@@ -58,6 +54,18 @@ fi
 if [ -z "$PAAS_TOKEN" ]; then
   echo "Error: paas-token not set!"
   exit 1
+fi
+
+if [ -z "$CLUSTER_NAME" ]; then
+  if ! echo "$CLUSTER_NAME" | grep -Eq "$CLUSTER_NAME_REGEX"; then
+    echo "Error: cluster name does not match regex!"
+    exit 1
+  fi
+
+  if [ "${#CLUSTER_NAME}" -ge $CLUSTER_NAME_LENGTH ]; then
+    echo "Error: cluster name too long!"
+    exit 1
+  fi
 fi
 
 set -u
@@ -94,19 +102,23 @@ metadata:
 spec:
   apiUrl: ${API_URL}
   skipCertCheck: ${SKIP_CERT_CHECK}
+  networkZone: ${CLUSTER_NAME}
   kubernetesMonitoring:
-    enabled: ${ENABLE_K8S_MONITORING}
+    enabled: true
+    group: ${CLUSTER_NAME}
+  routing:
+    enabled: true
   classicFullStack:
     enabled: true
     tolerations:
     - effect: NoSchedule
       key: node-role.kubernetes.io/master
       operator: Exists
-    args:
-    - --set-app-log-content-access=${SET_APP_LOG_CONTENT_ACCESS}
     env:
     - name: ONEAGENT_ENABLE_VOLUME_STORAGE
       value: "${ENABLE_VOLUME_STORAGE}"
+    args:
+    - --set-host-group="${CLUSTER_NAME}"
 EOF
 }
 
@@ -116,8 +128,6 @@ addK8sConfiguration() {
     echo "Error: failed to get kubernetes endpoint!"
     exit 1
   fi
-
-  CONNECTION_NAME="$(echo "${K8S_ENDPOINT}" | awk -F[/:] '{print $4}')"
 
   K8S_SECRET_NAME="$(for token in $("${CLI}" get sa dynatrace-kubernetes-monitoring -o jsonpath='{.secrets[*].name}' -n dynatrace); do echo "$token"; done | grep token)"
   if [ -z "$K8S_SECRET_NAME" ]; then
@@ -134,7 +144,7 @@ addK8sConfiguration() {
   json="$(
     cat <<EOF
 {
-  "label": "${CONNECTION_NAME}",
+  "label": "${CLUSTER_NAME}",
   "endpointUrl": "${K8S_ENDPOINT}",
   "eventsFieldSelectors": [
     {
@@ -158,22 +168,33 @@ EOF
     -H "Content-Type: application/json; charset=utf-8" \
     -d "${json}")"
 
-  if echo "$response" | grep "${CONNECTION_NAME}" >/dev/null 2>&1; then
+  if echo "$response" | grep "${CLUSTER_NAME}" >/dev/null 2>&1; then
     echo "Kubernetes monitoring successfully setup."
   else
     echo "Error adding Kubernetes cluster to Dynatrace: $response"
   fi
 }
 
+checkForExistingCluster() {
+  response="$(curl -sS -X GET "${API_URL}/config/v1/kubernetes/credentials" \
+    -H "accept: application/json; charset=utf-8" \
+    -H "Authorization: Api-Token ${API_TOKEN}" \
+    -H "Content-Type: application/json; charset=utf-8")"
+
+  if echo "$response" | grep -FEq "\"name\":\"${CLUSTER_NAME}\""; then
+    echo "Error: Cluster name already exists!"
+    exit 1
+  fi
+}
+
 ####### MAIN #######
+printf "\nCheck if cluster already exists...\n"
+checkForExistingCluster
 printf "\nCreating Dynatrace namespace...\n"
 checkIfNSExists
 printf "\nApplying Dynatrace Operator...\n"
 applyDynatraceOperator
 printf "\nApplying DynaKube CustomResource...\n"
 applyDynaKubeCR
-
-if [ "${ENABLE_K8S_MONITORING}" = "true" ]; then
-  printf "\nAdding cluster to Dynatrace...\n"
-  addK8sConfiguration
-fi
+printf "\nAdding cluster to Dynatrace...\n"
+addK8sConfiguration

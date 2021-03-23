@@ -123,7 +123,7 @@ func TestReconcile(t *testing.T) {
 
 		found := false
 		for _, env := range newStatefulSet.Spec.Template.Spec.Containers[0].Env {
-			if env.Name == ProxyEnv {
+			if env.Name == DTInternalProxy {
 				found = true
 				assert.Equal(t, testValue, env.Value)
 			}
@@ -194,6 +194,39 @@ func TestReconcile_UpdateStatefulSetIfOutdated(t *testing.T) {
 	updated, err = r.updateStatefulSetIfOutdated(desiredSts)
 	assert.NoError(t, err)
 	assert.True(t, updated)
+}
+
+func TestReconcile_DeleteStatefulSetIfOldLabelsAreUsed(t *testing.T) {
+	r := createDefaultReconciler(t)
+	desiredSts, err := r.buildDesiredStatefulSet()
+	require.NoError(t, err)
+	require.NotNil(t, desiredSts)
+
+	deleted, err := r.deleteStatefulSetIfOldLabelsAreUsed(desiredSts)
+	assert.Error(t, err)
+	assert.False(t, deleted)
+	assert.True(t, k8serrors.IsNotFound(errors.Cause(err)))
+
+	created, err := r.createStatefulSetIfNotExists(desiredSts)
+	require.True(t, created)
+	require.NoError(t, err)
+
+	deleted, err = r.deleteStatefulSetIfOldLabelsAreUsed(desiredSts)
+	assert.NoError(t, err)
+	assert.False(t, deleted)
+
+	r.Instance.Spec.Proxy = &dynatracev1alpha1.DynaKubeProxy{Value: testValue}
+	labels := make(map[string]string)
+	labels[OldKeyActiveGate] = "dynakube"
+	r.Instance.Labels = labels
+	desiredSts, err = r.buildDesiredStatefulSet()
+	require.NoError(t, err)
+	err = r.Update(context.TODO(), desiredSts)
+	assert.NoError(t, err)
+
+	deleted, err = r.deleteStatefulSetIfOldLabelsAreUsed(desiredSts)
+	assert.NoError(t, err)
+	assert.True(t, deleted)
 }
 
 func TestReconcile_GetCustomPropertyHash(t *testing.T) {

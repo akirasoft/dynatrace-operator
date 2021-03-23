@@ -28,11 +28,11 @@ func mergeLabels(labels ...map[string]string) map[string]string {
 }
 
 // buildLabels returns generic labels based on the name given for a Dynatrace OneAgent
-func buildLabels(name string) map[string]string {
+func buildLabels(name string, feature string) map[string]string {
 	return map[string]string{
 		"dynatrace.com/component":         "operator",
 		"operator.dynatrace.com/instance": name,
-		"operator.dynatrace.com/feature":  "oneagent",
+		"operator.dynatrace.com/feature":  feature,
 	}
 }
 
@@ -65,7 +65,8 @@ func validate(cr *dynatracev1alpha1.DynaKube) error {
 func (r *ReconcileOneAgent) determineOneAgentPhase(instance *dynatracev1alpha1.DynaKube) (bool, error) {
 	var phaseChanged bool
 	dsActual := &appsv1.DaemonSet{}
-	err := r.client.Get(context.TODO(), types.NamespacedName{Name: instance.GetName(), Namespace: instance.GetNamespace()}, dsActual)
+	instanceName := fmt.Sprintf("%s-%s", instance.Name, r.feature)
+	err := r.client.Get(context.TODO(), types.NamespacedName{Name: instanceName, Namespace: instance.Namespace}, dsActual)
 
 	if k8serrors.IsNotFound(err) {
 		return false, nil

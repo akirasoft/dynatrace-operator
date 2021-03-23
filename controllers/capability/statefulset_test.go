@@ -6,7 +6,6 @@ import (
 	dynatracev1alpha1 "github.com/Dynatrace/dynatrace-operator/api/v1alpha1"
 	"github.com/Dynatrace/dynatrace-operator/controllers/customproperties"
 	"github.com/Dynatrace/dynatrace-operator/controllers/dtpullsecret"
-	"github.com/Dynatrace/dynatrace-operator/controllers/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -48,22 +47,20 @@ func TestStatefulSetBuilder_Build(t *testing.T) {
 	assert.Equal(t, map[string]string{
 		KeyDynatrace:  ValueActiveGate,
 		KeyActiveGate: instance.Name,
-		keyFeature:    testFeature,
+		KeyFeature:    testFeature,
 	}, sts.Labels)
 	assert.Equal(t, instance.Spec.RoutingSpec.Replicas, sts.Spec.Replicas)
 	assert.Equal(t, appsv1.ParallelPodManagement, sts.Spec.PodManagementPolicy)
 	assert.Equal(t, metav1.LabelSelector{
-		MatchLabels: BuildLabelsFromInstance(instance),
+		MatchLabels: BuildLabelsFromInstance(instance, testFeature),
 	}, *sts.Spec.Selector)
 	assert.NotEqual(t, corev1.PodTemplateSpec{}, sts.Spec.Template)
-	assert.Equal(t, MergeLabels(
-		BuildLabels(instance, capabilityProperties),
-		map[string]string{keyFeature: testFeature}), sts.Spec.Template.Labels)
+	assert.Equal(t, BuildLabels(instance, testFeature, capabilityProperties), sts.Spec.Template.Labels)
 	assert.Equal(t, sts.Labels, sts.Spec.Template.Labels)
 	assert.NotEqual(t, corev1.PodSpec{}, sts.Spec.Template.Spec)
-	assert.Contains(t, sts.Annotations, annotationTemplateHash)
+	assert.Contains(t, sts.Annotations, AnnotationTemplateHash)
 
-	storedHash := sts.Annotations[annotationTemplateHash]
+	storedHash := sts.Annotations[AnnotationTemplateHash]
 	sts.Annotations = map[string]string{}
 	hash, err := generateStatefulSetHash(sts)
 	assert.NoError(t, err)
@@ -73,9 +70,8 @@ func TestStatefulSetBuilder_Build(t *testing.T) {
 		sts, _ := CreateStatefulSet(NewStatefulSetProperties(instance, capabilityProperties,
 			"", testValue, "", "", ""))
 		assert.Equal(t, map[string]string{
-			annotationImageHash:       instance.Status.ActiveGate.ImageHash,
-			annotationImageVersion:    instance.Status.ActiveGate.ImageVersion,
-			annotationCustomPropsHash: testValue,
+			AnnotationImageVersion:    instance.Status.ActiveGate.ImageVersion,
+			AnnotationCustomPropsHash: testValue,
 		}, sts.Spec.Template.Annotations)
 	})
 }
@@ -135,11 +131,11 @@ func TestStatefulSet_Container(t *testing.T) {
 		"", "", "", "", ""))
 
 	assert.Equal(t, dynatracev1alpha1.OperatorName, container.Name)
-	assert.Equal(t, utils.BuildActiveGateImage(instance), container.Image)
+	assert.Equal(t, instance.ActiveGateImage(), container.Image)
 	assert.NotEmpty(t, container.Resources)
 	assert.Equal(t, corev1.PullAlways, container.ImagePullPolicy)
 	assert.NotEmpty(t, container.Env)
-	assert.NotEmpty(t, container.Args)
+	assert.Empty(t, container.Args)
 	assert.Empty(t, container.VolumeMounts)
 	assert.NotNil(t, container.ReadinessProbe)
 	assert.NotNil(t, container.LivenessProbe)
@@ -215,7 +211,7 @@ func TestStatefulSet_Env(t *testing.T) {
 			"", "", "", "", ""))
 
 		assert.Contains(t, envVars, corev1.EnvVar{
-			Name:  ProxyEnv,
+			Name:  DTInternalProxy,
 			Value: testValue,
 		})
 	})
@@ -227,40 +223,39 @@ func TestStatefulSet_Env(t *testing.T) {
 		assert.NotEmpty(t, envVars)
 
 		for _, envVar := range envVars {
-			if envVar.Name == ProxyEnv {
+			if envVar.Name == DTInternalProxy {
 				assert.Equal(t, ProxyKey, envVar.ValueFrom.SecretKeyRef.Key)
 				assert.Equal(t, corev1.LocalObjectReference{Name: testName}, envVar.ValueFrom.SecretKeyRef.LocalObjectReference)
 			}
 		}
 	})
-}
-
-func TestStatefulSet_Args(t *testing.T) {
-	instance := buildTestInstance()
-	capabilityProperties := &instance.Spec.RoutingSpec.CapabilityProperties
-
-	t.Run(`with only default values`, func(t *testing.T) {
-		args := buildArgs(NewStatefulSetProperties(instance, capabilityProperties,
-			"", "", "", "", ""))
-		assert.Equal(t, []string{DTCapabilitiesArg, testKey}, args)
-	})
 	t.Run(`with networkzone`, func(t *testing.T) {
+		instance := buildTestInstance()
 		instance.Spec.NetworkZone = testName
-		args := buildArgs(NewStatefulSetProperties(instance, capabilityProperties,
+		capabilityProperties := &instance.Spec.RoutingSpec.CapabilityProperties
+		envVars := buildEnvs(NewStatefulSetProperties(instance, capabilityProperties,
 			"", "", "", "", ""))
-		assert.Contains(t, args, `--networkzone="`+testName+`"`)
-	})
-	t.Run(`with proxy`, func(t *testing.T) {
-		instance.Spec.Proxy = &dynatracev1alpha1.DynaKubeProxy{Value: testValue}
-		args := buildArgs(NewStatefulSetProperties(instance, capabilityProperties,
-			"", "", "", "", ""))
-		assert.Contains(t, args, ProxyArg)
+
+		assert.NotEmpty(t, envVars)
+
+		assert.Contains(t, envVars, corev1.EnvVar{
+			Name:  DTNetworkZone,
+			Value: testName,
+		})
 	})
 	t.Run(`with group`, func(t *testing.T) {
-		capabilityProperties.Group = testName
-		args := buildArgs(NewStatefulSetProperties(instance, capabilityProperties,
+		instance := buildTestInstance()
+		instance.Spec.RoutingSpec.Group = testValue
+		capabilityProperties := &instance.Spec.RoutingSpec.CapabilityProperties
+		envVars := buildEnvs(NewStatefulSetProperties(instance, capabilityProperties,
 			"", "", "", "", ""))
-		assert.Contains(t, args, `--group="`+testName+`"`)
+
+		assert.NotEmpty(t, envVars)
+
+		assert.Contains(t, envVars, corev1.EnvVar{
+			Name:  DTGroup,
+			Value: testValue,
+		})
 	})
 }
 

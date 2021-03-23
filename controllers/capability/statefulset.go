@@ -9,7 +9,6 @@ import (
 	dynatracev1alpha1 "github.com/Dynatrace/dynatrace-operator/api/v1alpha1"
 	"github.com/Dynatrace/dynatrace-operator/controllers/customproperties"
 	"github.com/Dynatrace/dynatrace-operator/controllers/dtpullsecret"
-	"github.com/Dynatrace/dynatrace-operator/controllers/utils"
 	"github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -30,22 +29,18 @@ const (
 	arm64 = "arm64"
 	linux = "linux"
 
-	annotationTemplateHash    = "internal.operator.dynatrace.com/template-hash"
-	annotationImageHash       = "internal.operator.dynatrace.com/image-hash"
-	annotationImageVersion    = "internal.operator.dynatrace.com/image-version"
-	annotationCustomPropsHash = "internal.operator.dynatrace.com/custom-properties-hash"
+	AnnotationTemplateHash    = "internal.operator.dynatrace.com/template-hash"
+	AnnotationImageVersion    = "internal.operator.dynatrace.com/image-version"
+	AnnotationCustomPropsHash = "internal.operator.dynatrace.com/custom-properties-hash"
 
 	DTCapabilities    = "DT_CAPABILITIES"
 	DTIdSeedNamespace = "DT_ID_SEED_NAMESPACE"
 	DTIdSeedClusterId = "DT_ID_SEED_K8S_CLUSTER_ID"
+	DTNetworkZone     = "DT_NETWORK_ZONE"
+	DTGroup           = "DT_GROUP"
+	DTInternalProxy   = "DT_INTERNAL_PROXY"
 
-	DTCapabilitiesArg = "--enable=$(DT_CAPABILITIES)"
-
-	ProxyArg = `PROXY="${ACTIVE_GATE_PROXY}"`
-	ProxyEnv = "ACTIVE_GATE_PROXY"
 	ProxyKey = "ProxyKey"
-
-	keyFeature = "feature"
 )
 
 type StatefulSetEvent func(sts *appsv1.StatefulSet)
@@ -82,26 +77,21 @@ func NewStatefulSetProperties(instance *dynatracev1alpha1.DynaKube, capabilityPr
 func CreateStatefulSet(stsProperties *statefulSetProperties) (*appsv1.StatefulSet, error) {
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      stsProperties.Name + "-" + stsProperties.feature,
-			Namespace: stsProperties.Namespace,
-			Labels: MergeLabels(
-				BuildLabels(stsProperties.DynaKube, stsProperties.CapabilityProperties),
-				map[string]string{keyFeature: stsProperties.feature}),
+			Name:        stsProperties.Name + "-" + stsProperties.feature,
+			Namespace:   stsProperties.Namespace,
+			Labels:      BuildLabels(stsProperties.DynaKube, stsProperties.feature, stsProperties.CapabilityProperties),
 			Annotations: map[string]string{},
 		},
 		Spec: appsv1.StatefulSetSpec{
 			Replicas:            stsProperties.Replicas,
 			PodManagementPolicy: appsv1.ParallelPodManagement,
-			Selector:            &metav1.LabelSelector{MatchLabels: BuildLabelsFromInstance(stsProperties.DynaKube)},
+			Selector:            &metav1.LabelSelector{MatchLabels: BuildLabelsFromInstance(stsProperties.DynaKube, stsProperties.feature)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: MergeLabels(
-						BuildLabels(stsProperties.DynaKube, stsProperties.CapabilityProperties),
-						map[string]string{keyFeature: stsProperties.feature}),
+					Labels: BuildLabels(stsProperties.DynaKube, stsProperties.feature, stsProperties.CapabilityProperties),
 					Annotations: map[string]string{
-						annotationImageHash:       stsProperties.Status.ActiveGate.ImageHash,
-						annotationImageVersion:    stsProperties.Status.ActiveGate.ImageVersion,
-						annotationCustomPropsHash: stsProperties.customPropertiesHash,
+						AnnotationImageVersion:    stsProperties.Status.ActiveGate.ImageVersion,
+						AnnotationCustomPropsHash: stsProperties.customPropertiesHash,
 					},
 				},
 				Spec: buildTemplateSpec(stsProperties),
@@ -117,7 +107,7 @@ func CreateStatefulSet(stsProperties *statefulSetProperties) (*appsv1.StatefulSe
 		return nil, errors.WithStack(err)
 	}
 
-	sts.ObjectMeta.Annotations[annotationTemplateHash] = hash
+	sts.ObjectMeta.Annotations[AnnotationTemplateHash] = hash
 	return sts, nil
 }
 
@@ -144,11 +134,10 @@ func buildTemplateSpec(stsProperties *statefulSetProperties) corev1.PodSpec {
 func buildContainer(stsProperties *statefulSetProperties) corev1.Container {
 	return corev1.Container{
 		Name:            dynatracev1alpha1.OperatorName,
-		Image:           utils.BuildActiveGateImage(stsProperties.DynaKube),
+		Image:           stsProperties.DynaKube.ActiveGateImage(),
 		Resources:       BuildResources(stsProperties.DynaKube),
 		ImagePullPolicy: corev1.PullAlways,
 		Env:             buildEnvs(stsProperties),
-		Args:            buildArgs(stsProperties),
 		VolumeMounts:    buildVolumeMounts(stsProperties),
 		ReadinessProbe: &corev1.Probe{
 			Handler: corev1.Handler{
@@ -229,6 +218,12 @@ func buildEnvs(stsProperties *statefulSetProperties) []corev1.EnvVar {
 	if !isProxyNilOrEmpty(stsProperties.Spec.Proxy) {
 		envs = append(envs, buildProxyEnv(stsProperties.Spec.Proxy))
 	}
+	if stsProperties.Group != "" {
+		envs = append(envs, corev1.EnvVar{Name: DTGroup, Value: stsProperties.Group})
+	}
+	if stsProperties.Spec.NetworkZone != "" {
+		envs = append(envs, corev1.EnvVar{Name: DTNetworkZone, Value: stsProperties.Spec.NetworkZone})
+	}
 
 	return envs
 }
@@ -236,7 +231,7 @@ func buildEnvs(stsProperties *statefulSetProperties) []corev1.EnvVar {
 func buildProxyEnv(proxy *dynatracev1alpha1.DynaKubeProxy) corev1.EnvVar {
 	if proxy.ValueFrom != "" {
 		return corev1.EnvVar{
-			Name: ProxyEnv,
+			Name: DTInternalProxy,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: proxy.ValueFrom},
@@ -246,30 +241,10 @@ func buildProxyEnv(proxy *dynatracev1alpha1.DynaKubeProxy) corev1.EnvVar {
 		}
 	} else {
 		return corev1.EnvVar{
-			Name:  ProxyEnv,
+			Name:  DTInternalProxy,
 			Value: proxy.Value,
 		}
 	}
-}
-
-func buildArgs(stsProperties *statefulSetProperties) []string {
-	group := stsProperties.Group
-	args := []string{
-		DTCapabilitiesArg,
-	}
-	args = append(args, stsProperties.Args...)
-
-	if stsProperties.Spec.NetworkZone != "" {
-		args = append(args, fmt.Sprintf(`--networkzone="%s"`, stsProperties.Spec.NetworkZone))
-	}
-	if !isProxyNilOrEmpty(stsProperties.Spec.Proxy) {
-		args = append(args, ProxyArg)
-	}
-	if group != "" {
-		args = append(args, fmt.Sprintf(`--group="%s"`, group))
-	}
-
-	return args
 }
 
 func determineServiceAccountName(stsProperties *statefulSetProperties) string {
@@ -325,7 +300,7 @@ func HasStatefulSetChanged(a *appsv1.StatefulSet, b *appsv1.StatefulSet) bool {
 
 func GetTemplateHash(a metav1.Object) string {
 	if annotations := a.GetAnnotations(); annotations != nil {
-		return annotations[annotationTemplateHash]
+		return annotations[AnnotationTemplateHash]
 	}
 	return ""
 }

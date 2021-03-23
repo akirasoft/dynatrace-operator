@@ -3,6 +3,7 @@ package namespace
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"text/template"
 	"time"
@@ -12,7 +13,8 @@ import (
 	"github.com/Dynatrace/dynatrace-operator/webhook"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -21,6 +23,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
+
+//go:embed init.sh.tmpl
+var scriptContent string
+
+var scriptTmpl = template.Must(template.New("initScript").Parse(scriptContent))
 
 func Add(mgr manager.Manager, ns string) error {
 	logger := log.Log.WithName("namespaces.controller")
@@ -70,7 +77,7 @@ func (r *ReconcileNamespaces) Reconcile(ctx context.Context, request reconcile.R
 	log.Info("reconciling Namespace")
 
 	var ns corev1.Namespace
-	if err := r.client.Get(ctx, client.ObjectKey{Name: targetNS}, &ns); errors.IsNotFound(err) {
+	if err := r.client.Get(ctx, client.ObjectKey{Name: targetNS}, &ns); k8serrors.IsNotFound(err) {
 		return reconcile.Result{}, nil
 	} else if err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed to query Namespace: %w", err)
@@ -85,14 +92,20 @@ func (r *ReconcileNamespaces) Reconcile(ctx context.Context, request reconcile.R
 		return reconcile.Result{}, nil
 	}
 
-	var ims dynatracev1alpha1.DynaKubeList
-	if err := r.client.List(ctx, &ims, client.InNamespace(r.namespace)); err != nil {
-		return reconcile.Result{}, fmt.Errorf("failed to query OneAgentIMs: %w", err)
-	}
-
 	var apm dynatracev1alpha1.DynaKube
 	if err := r.client.Get(ctx, client.ObjectKey{Name: oaName, Namespace: r.namespace}, &apm); err != nil {
-		return reconcile.Result{}, fmt.Errorf("failed to query OneAgentAPM: %w", err)
+		return reconcile.Result{}, fmt.Errorf("failed to query DynaKubes: %w", err)
+	}
+
+	tokenName := utils.GetTokensName(&apm)
+	if !apm.Spec.CodeModules.Enabled {
+		r.ensureSecretDeleted(tokenName, targetNS)
+		return reconcile.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
+	var ims dynatracev1alpha1.DynaKubeList
+	if err := r.client.List(ctx, &ims, client.InNamespace(r.namespace)); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to query DynaKubeList: %w", err)
 	}
 
 	imNodes := map[string]string{}
@@ -107,7 +120,7 @@ func (r *ReconcileNamespaces) Reconcile(ctx context.Context, request reconcile.R
 	}
 
 	var tkns corev1.Secret
-	if err := r.client.Get(ctx, client.ObjectKey{Name: utils.GetTokensName(&apm), Namespace: r.namespace}, &tkns); err != nil {
+	if err := r.client.Get(ctx, client.ObjectKey{Name: tokenName, Namespace: r.namespace}, &tkns); err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed to query tokens: %w", err)
 	}
 
@@ -138,6 +151,14 @@ type script struct {
 	TrustedCAs []byte
 	ClusterID  string
 	IMNodes    map[string]string
+}
+
+func (r *ReconcileNamespaces) ensureSecretDeleted(name string, ns string) error {
+	secret := corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	if err := r.client.Delete(context.TODO(), &secret); err != nil && !k8serrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 func newScript(ctx context.Context, c client.Client, dynaKube dynatracev1alpha1.DynaKube, tkns corev1.Secret, imNodes map[string]string, ns string) (*script, error) {
@@ -177,118 +198,6 @@ func newScript(ctx context.Context, c client.Client, dynaKube dynatracev1alpha1.
 		IMNodes:    imNodes,
 	}, nil
 }
-
-var scriptTmpl = template.Must(template.New("initScript").Parse(`#!/usr/bin/env bash
-
-set -eu
-
-if [[ -f "/var/lib/dynatrace/oneagent/agent/config/ruxithost.id" ]]; then
-	echo "WARNING: full-stack OneAgent has been injected to this container. App-only and full-stack injection can conflict with each other."
-fi
-
-api_url="{{.DynaKube.Spec.APIURL}}"
-config_dir="/mnt/config"
-target_dir="/mnt/oneagent"
-paas_token="{{.PaaSToken}}"
-proxy="{{.Proxy}}"
-skip_cert_checks="{{if .DynaKube.Spec.SkipCertCheck}}true{{else}}false{{end}}"
-custom_ca="{{if .TrustedCAs}}true{{else}}false{{end}}"
-fail_code=0
-cluster_id="{{.ClusterID}}"
-
-declare -A im_nodes
-im_nodes=(
-	{{- range $node, $tenant := .IMNodes}}
-	["{{$node}}"]="{{$tenant}}"
-	{{- end}}
-)
-
-set +u
-host_tenant="${im_nodes[${K8S_NODE_NAME}]}"
-set -u
-
-archive="/mnt/init/tmp.$RANDOM"
-
-if [[ "${FAILURE_POLICY}" == "fail" ]]; then
-	fail_code=1
-fi
-
-if [[ "${MODE}" == "installer" ]]; then
-	curl_params=(
-		"--silent"
-		"--output" "${archive}"
-	)
-
-	if [[ "${INSTALLER_URL}" != "" ]]; then
-		curl_params+=("${INSTALLER_URL}")
-	else
-		curl_params+=(
-			"${api_url}/v1/deployment/installer/agent/unix/paas/latest?flavor=${FLAVOR}&include=${TECHNOLOGIES}&bitness=64"
-			"--header" "Authorization: Api-Token ${paas_token}"
-		)
-	fi
-
-	if [[ "${skip_cert_checks}" == "true" ]]; then
-		curl_params+=("--insecure")
-	fi
-
-	if [[ "${custom_ca}" == "true" ]]; then
-		curl_params+=("--cacert" "${config_dir}/ca.pem")
-	fi
-
-	if [[ "${proxy}" != "" ]]; then
-		curl_params+=("--proxy" "${proxy}")
-	fi
-
-	echo "Downloading OneAgent package..."
-	if ! curl "${curl_params[@]}"; then
-		echo "Failed to download the OneAgent package."
-		exit "${fail_code}"
-	fi
-
-	echo "Unpacking OneAgent package..."
-	if ! unzip -o -d "${target_dir}" "${archive}"; then
-		echo "Failed to unpack the OneAgent package."
-		mv "${archive}" "${target_dir}/package.zip"
-		exit "${fail_code}"
-	fi
-fi
-
-echo "Configuring OneAgent..."
-echo -n "${INSTALLPATH}/agent/lib64/liboneagentproc.so" >> "${target_dir}/ld.so.preload"
-
-for i in $(seq 1 $CONTAINERS_COUNT)
-do
-	container_name_var="CONTAINER_${i}_NAME"
-	container_image_var="CONTAINER_${i}_IMAGE"
-
-	container_name="${!container_name_var}"
-	container_image="${!container_image_var}"
-
-	container_conf_file="${target_dir}/container_${container_name}.conf"
-
-	echo "Writing ${container_conf_file} file..."
-	echo "[container]
-containerName ${container_name}
-imageName ${container_image}
-k8s_fullpodname ${K8S_PODNAME}
-k8s_poduid ${K8S_PODUID}
-k8s_containername ${container_name}
-k8s_basepodname ${K8S_BASEPODNAME}
-k8s_namespace ${K8S_NAMESPACE}">>${container_conf_file}
-
-	if [[ ! -z "${host_tenant}" ]]; then		
-		if [[ "{{.DynaKube.Status.EnvironmentID}}" == "${host_tenant}" ]]; then
-			echo "k8s_node_name ${K8S_NODE_NAME}
-k8s_cluster_id ${cluster_id}">>${container_conf_file}
-		fi
-
-	echo "
-[host]
-tenant ${host_tenant}">>${container_conf_file}
-	fi
-done
-`))
 
 func (s *script) generate() (map[string][]byte, error) {
 	var buf bytes.Buffer
