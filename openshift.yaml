@@ -933,7 +933,7 @@ spec:
               fieldPath: metadata.name
         - name: RELATED_IMAGE_DYNATRACE_ONEAGENT
           value: registry.connect.redhat.com/dynatrace/oneagent
-        image: registry.connect.redhat.com/dynatrace/dynatrace-oneagent-operator:v0.10.0
+        image: docker.io/dynatrace/dynatrace-oneagent-operator:v0.10.0
         imagePullPolicy: Always
         livenessProbe:
           httpGet:
