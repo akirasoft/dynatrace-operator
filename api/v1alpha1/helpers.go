@@ -31,6 +31,11 @@ func (dk *DynaKube) NeedsActiveGate() bool {
 	return dk.Spec.KubernetesMonitoringSpec.Enabled || dk.Spec.RoutingSpec.Enabled
 }
 
+// NeedsOneAgent returns true when a feature requires OneAgent instances.
+func (dk *DynaKube) NeedsOneAgent() bool {
+	return dk.Spec.ClassicFullStack.Enabled || dk.Spec.InfraMonitoring.Enabled
+}
+
 // NeedsImmutableOneAgent returns true when a feature requires OneAgent instances running the immutable image.
 func (dk *DynaKube) NeedsImmutableOneAgent() bool {
 	cfs := &dk.Spec.ClassicFullStack
@@ -89,4 +94,12 @@ func buildImageRegistry(apiURL string) string {
 	registry = strings.TrimPrefix(registry, "http://")
 	registry = strings.TrimSuffix(registry, "/api")
 	return registry
+}
+
+// Tokens returns the name of the Secret to be used for tokens.
+func (dk *DynaKube) Tokens() string {
+	if tkns := dk.Spec.Tokens; tkns != "" {
+		return tkns
+	}
+	return dk.Name
 }

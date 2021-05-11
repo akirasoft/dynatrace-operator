@@ -29,7 +29,9 @@ func TestNewPodSpecForCR_Arguments(t *testing.T) {
 			}},
 		Status: dynatracev1alpha1.DynaKubeStatus{
 			OneAgent: dynatracev1alpha1.OneAgentStatus{
-				Version: testContainerImageVersion,
+				VersionStatus: dynatracev1alpha1.VersionStatus{
+					Version: testContainerImageVersion,
+				},
 			},
 		}}
 	metadata := deploymentmetadata.NewDeploymentMetadata(testUID)
@@ -71,6 +73,6 @@ func TestNewPodSpecForCR_Arguments(t *testing.T) {
 		assert.Contains(t, podSpecs.Containers[0].Args, "--set-host-id-source=k8s-node-name")
 
 		podSpecs = newPodSpecForCR(instance, fullStackSpecs, ClassicFeature, true, log, testUID)
-		assert.NotContains(t, podSpecs.Containers[0].Args, "--set-host-id-source=k8s-node-name")
+		assert.Contains(t, podSpecs.Containers[0].Args, "--set-host-id-source=auto")
 	})
 }

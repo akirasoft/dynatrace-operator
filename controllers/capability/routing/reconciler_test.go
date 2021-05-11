@@ -11,13 +11,12 @@ import (
 	"github.com/Dynatrace/dynatrace-operator/controllers/kubesystem"
 	"github.com/Dynatrace/dynatrace-operator/dtclient"
 	"github.com/Dynatrace/dynatrace-operator/logger"
+	"github.com/Dynatrace/dynatrace-operator/scheme"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/deprecated/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -27,11 +26,6 @@ const (
 	testUID       = "test-uid"
 	testNamespace = "test-namespace"
 )
-
-func init() {
-	utilruntime.Must(scheme.AddToScheme(scheme.Scheme))
-	utilruntime.Must(v1alpha1.AddToScheme(scheme.Scheme))
-}
 
 func TestNewReconiler(t *testing.T) {
 	createDefaultReconciler(t)
@@ -57,7 +51,7 @@ func createDefaultReconciler(t *testing.T) *Reconciler {
 		return dtversion.ImageVersion{}, nil
 	}
 
-	r := NewReconciler(clt, clt, scheme.Scheme, dtc, log, instance, imgVerProvider, false)
+	r := NewReconciler(clt, clt, scheme.Scheme, dtc, log, instance, imgVerProvider)
 	require.NotNil(t, r)
 	require.NotNil(t, r.Client)
 	require.NotNil(t, r.Instance)
@@ -79,7 +73,7 @@ func TestReconcile(t *testing.T) {
 		assert.NoError(t, err)
 
 		var customProperties corev1.Secret
-		err = r.Get(context.TODO(), client.ObjectKey{Name: r.Instance.Name + "-" + module + "-" + customproperties.Suffix, Namespace: r.Instance.Namespace}, &customProperties)
+		err = r.Get(context.TODO(), client.ObjectKey{Name: r.Instance.Name + "-" + Module + "-" + customproperties.Suffix, Namespace: r.Instance.Namespace}, &customProperties)
 		assert.NoError(t, err)
 		assert.NotNil(t, customProperties)
 		assert.Contains(t, customProperties.Data, customproperties.DataKey)
@@ -155,7 +149,7 @@ func TestReconcile(t *testing.T) {
 		assert.NoError(t, err)
 
 		service := &corev1.Service{}
-		err = r.Get(context.TODO(), client.ObjectKey{Name: buildServiceName(r.Instance.Name, module), Namespace: r.Instance.Namespace}, service)
+		err = r.Get(context.TODO(), client.ObjectKey{Name: BuildServiceName(r.Instance.Name, Module), Namespace: r.Instance.Namespace}, service)
 		assert.NoError(t, err)
 		assert.NotNil(t, service)
 
@@ -168,23 +162,6 @@ func TestReconcile(t *testing.T) {
 		assert.NotNil(t, statefulSet)
 		assert.NoError(t, err)
 	})
-}
-
-func TestSetLivenessProbePort(t *testing.T) {
-	r := createDefaultReconciler(t)
-	stsProps := capability.NewStatefulSetProperties(r.Instance, &r.Instance.Spec.RoutingSpec.CapabilityProperties, "", "", "", "", "")
-	sts, err := capability.CreateStatefulSet(stsProps)
-
-	assert.NoError(t, err)
-	assert.NotNil(t, sts)
-
-	setLivenessProbePort(r.Instance)(sts)
-
-	assert.NotEmpty(t, sts.Spec.Template.Spec.Containers)
-	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].LivenessProbe)
-	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].LivenessProbe.HTTPGet)
-	assert.NotNil(t, sts.Spec.Template.Spec.Containers[0].LivenessProbe.HTTPGet.Port)
-	assert.Equal(t, serviceTargetPort, sts.Spec.Template.Spec.Containers[0].LivenessProbe.HTTPGet.Port.String())
 }
 
 func TestSetReadinessProbePort(t *testing.T) {

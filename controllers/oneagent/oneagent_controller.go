@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -30,7 +31,6 @@ import (
 const (
 	// time between consecutive queries for a new pod to get ready
 	splayTimeSeconds                      = uint16(10)
-	annotationTemplateHash                = "internal.oneagent.dynatrace.com/template-hash"
 	defaultUpdateInterval                 = 15 * time.Minute
 	updateEnvVar                          = "ONEAGENT_OPERATOR_UPDATE_INTERVAL"
 	ClassicFeature                        = "classic"
@@ -74,21 +74,19 @@ type ReconcileOneAgent struct {
 // Note:
 // The Controller will requeue the Request to be processed again if the returned error is non-nil or
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
-func (r *ReconcileOneAgent) Reconcile(ctx context.Context, rec *utils.Reconciliation) (update bool, err error) {
+func (r *ReconcileOneAgent) Reconcile(ctx context.Context, rec *utils.Reconciliation) (bool, error) {
 	r.logger.Info("Reconciling OneAgent")
-	err = validate(r.instance)
-	if err != nil {
+	if err := validate(r.instance); err != nil {
 		return false, err
 	}
 
 	rec.Update(utils.SetUseImmutableImageStatus(r.instance, r.fullStack), 5*time.Minute, "UseImmutableImage changed")
 
-	upd, err := r.reconcileRollout(ctx, rec, r.dtc)
+	upd, err := r.reconcileRollout(ctx, rec)
 	if err != nil {
 		return false, err
 	} else if upd {
 		r.logger.Info("Rollout reconciled")
-		return true, nil
 	}
 
 	updInterval := defaultUpdateInterval
@@ -101,35 +99,25 @@ func (r *ReconcileOneAgent) Reconcile(ctx context.Context, rec *utils.Reconcilia
 		}
 	}
 
-	if rec.IsOutdated(r.instance.Status.OneAgent.LastUpdateProbeTimestamp, updInterval) {
-		r.instance.Status.OneAgent.LastUpdateProbeTimestamp = rec.Now.DeepCopy()
-		rec.Update(true, 5*time.Minute, "updated last update time stamp")
+	if rec.IsOutdated(r.instance.Status.OneAgent.LastHostsRequestTimestamp, updInterval) {
+		r.instance.Status.OneAgent.LastHostsRequestTimestamp = rec.Now.DeepCopy()
+		rec.Update(true, 5*time.Minute, "updated last host request time stamp")
 
-		upd, err = r.reconcileInstanceStatuses(ctx, r.logger, r.instance, r.dtc)
-		if rec.Error(err) || rec.Update(upd, 5*time.Minute, "Instance statuses reconciled") {
-			return
-		}
-
-		if !r.instance.ShouldAutoUpdateOneAgent() {
-			r.logger.Info("Automatic oneagent update is disabled")
-			return
-		}
-
-		upd, err = r.reconcileVersion(ctx, r.logger, r.instance, r.fullStack, r.dtc)
-		if rec.Error(err) || rec.Update(upd, 5*time.Minute, "Versions reconciled") {
-			return
+		upd, err := r.reconcileInstanceStatuses(ctx, r.logger, r.instance, r.dtc)
+		rec.Update(upd, 5*time.Minute, "Instance statuses reconciled")
+		if rec.Error(err) {
+			return false, err
 		}
 	}
 
 	// Finally we have to determine the correct non error phase
-	if upd, err = r.determineOneAgentPhase(r.instance); !rec.Error(err) {
-		return upd, nil
-	}
+	_, err = r.determineOneAgentPhase(r.instance)
+	rec.Error(err)
 
-	return false, nil
+	return upd, nil
 }
 
-func (r *ReconcileOneAgent) reconcileRollout(ctx context.Context, rec *utils.Reconciliation, dtc dtclient.Client) (bool, error) {
+func (r *ReconcileOneAgent) reconcileRollout(ctx context.Context, rec *utils.Reconciliation) (bool, error) {
 	updateCR := false
 
 	// Define a new DaemonSet object
@@ -161,33 +149,8 @@ func (r *ReconcileOneAgent) reconcileRollout(ctx context.Context, rec *utils.Rec
 		}
 	}
 
-	if rec.Instance.Status.OneAgent.Version == "" {
-		if rec.Instance.Status.OneAgent.UseImmutableImage && rec.Instance.Spec.OneAgent.Image == "" {
-			if rec.Instance.Spec.OneAgent.Version == "" {
-				latest, err := dtc.GetLatestAgentVersion(dtclient.OsUnix, dtclient.InstallerTypeDefault)
-				if err != nil {
-					return false, fmt.Errorf("failed to get desired version: %w", err)
-				}
-				rec.Instance.Status.OneAgent.Version = latest
-			} else {
-				rec.Instance.Status.OneAgent.Version = rec.Instance.Spec.OneAgent.Version
-			}
-		} else {
-			desired, err := dtc.GetLatestAgentVersion(dtclient.OsUnix, dtclient.InstallerTypeDefault)
-			if err != nil {
-				return false, fmt.Errorf("failed to get desired version: %w", err)
-			}
-
-			rec.Log.Info("Updating version on OneAgent instance")
-			rec.Instance.Status.OneAgent.Version = desired
-		}
-
-		rec.Instance.Status.SetPhase(dynatracev1alpha1.Deploying)
-		updateCR = true
-	}
-
-	if rec.Instance.Status.Tokens != utils.GetTokensName(rec.Instance) {
-		rec.Instance.Status.Tokens = utils.GetTokensName(rec.Instance)
+	if rec.Instance.Status.Tokens != rec.Instance.Tokens() {
+		rec.Instance.Status.Tokens = rec.Instance.Tokens()
 		updateCR = true
 	}
 
@@ -228,6 +191,8 @@ func newDaemonSetForCR(logger logr.Logger, instance *dynatracev1alpha1.DynaKube,
 	selectorLabels := buildLabels(instance.GetName(), feature)
 	mergedLabels := mergeLabels(fs.Labels, selectorLabels)
 
+	maxUnavailable := intstr.FromInt(instance.FeatureOneAgentMaxUnavailable())
+
 	ds := &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
@@ -241,10 +206,15 @@ func newDaemonSetForCR(logger logr.Logger, instance *dynatracev1alpha1.DynaKube,
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: mergedLabels,
 					Annotations: map[string]string{
-						capability.AnnotationImageVersion: instance.Status.OneAgent.ImageVersion,
+						capability.AnnotationVersion: instance.Status.OneAgent.Version,
 					},
 				},
 				Spec: podSpec,
+			},
+			UpdateStrategy: appsv1.DaemonSetUpdateStrategy{
+				RollingUpdate: &appsv1.RollingUpdateDaemonSet{
+					MaxUnavailable: &maxUnavailable,
+				},
 			},
 		},
 	}
@@ -257,7 +227,7 @@ func newDaemonSetForCR(logger logr.Logger, instance *dynatracev1alpha1.DynaKube,
 	if err != nil {
 		return nil, err
 	}
-	ds.Annotations[annotationTemplateHash] = dsHash
+	ds.Annotations[capability.AnnotationTemplateHash] = dsHash
 
 	return ds, nil
 }
@@ -527,11 +497,11 @@ func prepareEnvVars(instance *dynatracev1alpha1.DynaKube, fs *dynatracev1alpha1.
 	if !instance.Status.OneAgent.UseImmutableImage {
 		reserved = append(reserved,
 			reservedEnvVar{
-				Name: "ONEAGENT_INSTALLER_TOKEN",
+				Name: "ONEAGENT_INSTALLER_DOWNLOAD_TOKEN",
 				Default: func(ev *corev1.EnvVar) {
 					ev.ValueFrom = &corev1.EnvVarSource{
 						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: utils.GetTokensName(instance)},
+							LocalObjectReference: corev1.LocalObjectReference{Name: instance.Tokens()},
 							Key:                  utils.DynatracePaasToken,
 						},
 					}
@@ -540,7 +510,7 @@ func prepareEnvVars(instance *dynatracev1alpha1.DynaKube, fs *dynatracev1alpha1.
 			reservedEnvVar{
 				Name: "ONEAGENT_INSTALLER_SCRIPT_URL",
 				Default: func(ev *corev1.EnvVar) {
-					ev.Value = fmt.Sprintf("%s/v1/deployment/installer/agent/unix/default/latest?Api-Token=$(ONEAGENT_INSTALLER_TOKEN)&arch=x86&flavor=default", instance.Spec.APIURL)
+					ev.Value = fmt.Sprintf("%s/v1/deployment/installer/agent/unix/default/latest?arch=x86&flavor=default", instance.Spec.APIURL)
 				},
 			},
 			reservedEnvVar{
@@ -623,7 +593,7 @@ func generateDaemonSetHash(ds *appsv1.DaemonSet) (string, error) {
 
 func getTemplateHash(a metav1.Object) string {
 	if annotations := a.GetAnnotations(); annotations != nil {
-		return annotations[annotationTemplateHash]
+		return annotations[capability.AnnotationTemplateHash]
 	}
 	return ""
 }
@@ -634,7 +604,7 @@ func (r *ReconcileOneAgent) reconcileInstanceStatuses(ctx context.Context, logge
 		handlePodListError(logger, err, listOpts)
 	}
 
-	instanceStatuses, err := getInstanceStatuses(pods, dtc, instance)
+	instanceStatuses, err := getInstanceStatuses(pods)
 	if err != nil {
 		if instanceStatuses == nil || len(instanceStatuses) <= 0 {
 			return false, err
@@ -649,23 +619,15 @@ func (r *ReconcileOneAgent) reconcileInstanceStatuses(ctx context.Context, logge
 	return false, err
 }
 
-func getInstanceStatuses(pods []corev1.Pod, dtc dtclient.Client, instance *dynatracev1alpha1.DynaKube) (map[string]dynatracev1alpha1.OneAgentInstance, error) {
+func getInstanceStatuses(pods []corev1.Pod) (map[string]dynatracev1alpha1.OneAgentInstance, error) {
 	instanceStatuses := make(map[string]dynatracev1alpha1.OneAgentInstance)
 
 	for _, pod := range pods {
-		instanceStatus := dynatracev1alpha1.OneAgentInstance{
+		instanceStatuses[pod.Spec.NodeName] = dynatracev1alpha1.OneAgentInstance{
 			PodName:   pod.Name,
 			IPAddress: pod.Status.HostIP,
 		}
-		ver, err := dtc.GetAgentVersionForIP(pod.Status.HostIP)
-		if err != nil {
-			if err = handleAgentVersionForIPError(err, instance, pod, &instanceStatus); err != nil {
-				return instanceStatuses, err
-			}
-		} else {
-			instanceStatus.Version = ver
-		}
-		instanceStatuses[pod.Spec.NodeName] = instanceStatus
 	}
+
 	return instanceStatuses, nil
 }

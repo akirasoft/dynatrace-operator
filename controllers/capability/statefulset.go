@@ -30,7 +30,7 @@ const (
 	linux = "linux"
 
 	AnnotationTemplateHash    = "internal.operator.dynatrace.com/template-hash"
-	AnnotationImageVersion    = "internal.operator.dynatrace.com/image-version"
+	AnnotationVersion         = "internal.operator.dynatrace.com/version"
 	AnnotationCustomPropsHash = "internal.operator.dynatrace.com/custom-properties-hash"
 
 	DTCapabilities    = "DT_CAPABILITIES"
@@ -90,7 +90,7 @@ func CreateStatefulSet(stsProperties *statefulSetProperties) (*appsv1.StatefulSe
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: BuildLabels(stsProperties.DynaKube, stsProperties.feature, stsProperties.CapabilityProperties),
 					Annotations: map[string]string{
-						AnnotationImageVersion:    stsProperties.Status.ActiveGate.ImageVersion,
+						AnnotationVersion:         stsProperties.Status.ActiveGate.Version,
 						AnnotationCustomPropsHash: stsProperties.customPropertiesHash,
 					},
 				},
@@ -135,7 +135,7 @@ func buildContainer(stsProperties *statefulSetProperties) corev1.Container {
 	return corev1.Container{
 		Name:            dynatracev1alpha1.OperatorName,
 		Image:           stsProperties.DynaKube.ActiveGateImage(),
-		Resources:       BuildResources(stsProperties.DynaKube),
+		Resources:       stsProperties.CapabilityProperties.Resources,
 		ImagePullPolicy: corev1.PullAlways,
 		Env:             buildEnvs(stsProperties),
 		VolumeMounts:    buildVolumeMounts(stsProperties),
@@ -150,18 +150,6 @@ func buildContainer(stsProperties *statefulSetProperties) corev1.Container {
 			InitialDelaySeconds: 90,
 			PeriodSeconds:       15,
 			FailureThreshold:    3,
-		},
-		LivenessProbe: &corev1.Probe{
-			Handler: corev1.Handler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path:   "/rest/state",
-					Port:   intstr.IntOrString{IntVal: 9999},
-					Scheme: "HTTPS",
-				},
-			},
-			InitialDelaySeconds: 90,
-			PeriodSeconds:       30,
-			FailureThreshold:    2,
 		},
 	}
 }

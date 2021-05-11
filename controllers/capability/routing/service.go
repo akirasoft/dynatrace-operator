@@ -16,11 +16,12 @@ const (
 	serviceTargetPort = "ag-https"
 )
 
-func createService(instance *v1alpha1.DynaKube, feature string) corev1.Service {
-	return corev1.Service{
+func createService(instance *v1alpha1.DynaKube, feature string) *corev1.Service {
+	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      buildServiceName(instance.Name, feature),
+			Name:      BuildServiceName(instance.Name, feature),
 			Namespace: instance.Namespace,
+			Labels:    capability.BuildLabelsFromInstance(instance, feature),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
@@ -36,18 +37,18 @@ func createService(instance *v1alpha1.DynaKube, feature string) corev1.Service {
 	}
 }
 
-func buildServiceName(instanceName string, module string) string {
+func BuildServiceName(instanceName string, module string) string {
 	return instanceName + "-" + module
 }
 
-// buildServiceHostName converts the name returned by buildServiceName
+// buildServiceHostName converts the name returned by BuildServiceName
 // into the variable name which Kubernetes uses to reference the associated service.
 // For more information see: https://kubernetes.io/docs/concepts/services-networking/service/
 func buildServiceHostName(instanceName string, module string) string {
 	serviceName :=
 		strings.ReplaceAll(
 			strings.ToUpper(
-				buildServiceName(instanceName, module)),
+				BuildServiceName(instanceName, module)),
 			"-", "_")
 
 	return fmt.Sprintf("$(%s_SERVICE_HOST):$(%s_SERVICE_PORT)", serviceName, serviceName)

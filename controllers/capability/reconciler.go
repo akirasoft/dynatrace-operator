@@ -3,6 +3,7 @@ package capability
 import (
 	"context"
 	"hash/fnv"
+	"reflect"
 	"strconv"
 
 	"github.com/Dynatrace/dynatrace-operator/api/v1alpha1"
@@ -20,10 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-const (
-	OldKeyActiveGate = "activegate"
-)
-
 type Reconciler struct {
 	client.Client
 	Instance                         *v1alpha1.DynaKube
@@ -32,7 +29,6 @@ type Reconciler struct {
 	dtc                              dtclient.Client
 	log                              logr.Logger
 	imageVersionProvider             dtversion.ImageVersionProvider
-	enableUpdates                    bool
 	feature                          string
 	capabilityName                   string
 	serviceAccountOwner              string
@@ -41,7 +37,7 @@ type Reconciler struct {
 }
 
 func NewReconciler(clt client.Client, apiReader client.Reader, scheme *runtime.Scheme, dtc dtclient.Client, log logr.Logger,
-	instance *v1alpha1.DynaKube, imageVersionProvider dtversion.ImageVersionProvider, enableUpdates bool,
+	instance *v1alpha1.DynaKube, imageVersionProvider dtversion.ImageVersionProvider,
 	capability *v1alpha1.CapabilityProperties, feature string, capabilityName string, serviceAccountOwner string) *Reconciler {
 	if serviceAccountOwner == "" {
 		serviceAccountOwner = feature
@@ -55,7 +51,6 @@ func NewReconciler(clt client.Client, apiReader client.Reader, scheme *runtime.S
 		log:                              log,
 		Instance:                         instance,
 		imageVersionProvider:             imageVersionProvider,
-		enableUpdates:                    enableUpdates,
 		feature:                          feature,
 		capabilityName:                   capabilityName,
 		serviceAccountOwner:              serviceAccountOwner,
@@ -174,15 +169,15 @@ func (r *Reconciler) deleteStatefulSetIfOldLabelsAreUsed(desiredSts *appsv1.Stat
 		return false, err
 	}
 
-	if _, ok := currentSts.Labels[OldKeyActiveGate]; !ok {
-		return false, nil
+	if !reflect.DeepEqual(currentSts.Labels, desiredSts.Labels) {
+		r.log.Info("Deleting existing stateful set")
+		if err = r.Delete(context.TODO(), desiredSts); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
-	r.log.Info("Deleting existing stateful set")
-	if err = r.Delete(context.TODO(), desiredSts); err != nil {
-		return false, err
-	}
-	return true, nil
+	return false, nil
 }
 
 func (r *Reconciler) calculateCustomPropertyHash() (string, error) {

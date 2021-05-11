@@ -10,6 +10,7 @@ import (
 	"github.com/Dynatrace/dynatrace-operator/controllers/kubesystem"
 	"github.com/Dynatrace/dynatrace-operator/dtclient"
 	"github.com/Dynatrace/dynatrace-operator/logger"
+	"github.com/Dynatrace/dynatrace-operator/scheme"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,17 +18,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/deprecated/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
-
-func init() {
-	utilruntime.Must(scheme.AddToScheme(scheme.Scheme))
-	utilruntime.Must(dynatracev1alpha1.AddToScheme(scheme.Scheme))
-}
 
 func TestNewReconiler(t *testing.T) {
 	createDefaultReconciler(t)
@@ -53,8 +47,8 @@ func createDefaultReconciler(t *testing.T) *Reconciler {
 		return dtversion.ImageVersion{}, nil
 	}
 
-	r := NewReconciler(clt, clt, scheme.Scheme, dtc, log, instance, imgVerProvider, false,
-		&instance.Spec.RoutingSpec.CapabilityProperties, "msgrouter", "MSGrouter", "")
+	r := NewReconciler(clt, clt, scheme.Scheme, dtc, log, instance, imgVerProvider,
+		&instance.Spec.RoutingSpec.CapabilityProperties, "router", "MSGrouter", "")
 	require.NotNil(t, r)
 	require.NotNil(t, r.Client)
 	require.NotNil(t, r.scheme)
@@ -216,14 +210,14 @@ func TestReconcile_DeleteStatefulSetIfOldLabelsAreUsed(t *testing.T) {
 	assert.False(t, deleted)
 
 	r.Instance.Spec.Proxy = &dynatracev1alpha1.DynaKubeProxy{Value: testValue}
-	labels := make(map[string]string)
-	labels[OldKeyActiveGate] = "dynakube"
-	r.Instance.Labels = labels
 	desiredSts, err = r.buildDesiredStatefulSet()
 	require.NoError(t, err)
+	correctLabels := desiredSts.Labels
+	desiredSts.Labels = map[string]string{"activegate": "dynakube"}
 	err = r.Update(context.TODO(), desiredSts)
 	assert.NoError(t, err)
 
+	desiredSts.Labels = correctLabels
 	deleted, err = r.deleteStatefulSetIfOldLabelsAreUsed(desiredSts)
 	assert.NoError(t, err)
 	assert.True(t, deleted)

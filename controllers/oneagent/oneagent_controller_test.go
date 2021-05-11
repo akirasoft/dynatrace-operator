@@ -13,6 +13,8 @@ import (
 	"github.com/Dynatrace/dynatrace-operator/controllers/utils"
 	"github.com/Dynatrace/dynatrace-operator/dtclient"
 	"github.com/Dynatrace/dynatrace-operator/logger"
+	"github.com/Dynatrace/dynatrace-operator/scheme"
+	"github.com/Dynatrace/dynatrace-operator/scheme/fake"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	appsv1 "k8s.io/api/apps/v1"
@@ -21,9 +23,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
@@ -33,11 +32,6 @@ const (
 	testURL       = "https://test-url"
 	testName      = "test-name"
 )
-
-func init() {
-	utilruntime.Must(scheme.AddToScheme(scheme.Scheme))
-	utilruntime.Must(dynatracev1alpha1.AddToScheme(scheme.Scheme))
-}
 
 var consoleLogger = zap.New(zap.UseDevMode(true), zap.WriteTo(os.Stdout))
 
@@ -68,13 +62,12 @@ func TestReconcileOneAgent_ReconcileOnEmptyEnvironmentAndDNSPolicy(t *testing.T)
 		ObjectMeta: metav1.ObjectMeta{Name: dkName, Namespace: namespace},
 		Spec:       dkSpec,
 	}
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(
+	fakeClient := fake.NewClient(
 		dynakube,
 		NewSecret(dkName, namespace, map[string]string{utils.DynatracePaasToken: "42", utils.DynatraceApiToken: "84"}),
-		sampleKubeSystemNS).Build()
+		sampleKubeSystemNS)
 
 	dtClient := &dtclient.MockDynatraceClient{}
-	dtClient.On("GetLatestAgentVersion", "unix", "default").Return("42", nil)
 
 	reconciler := &ReconcileOneAgent{
 		client:    fakeClient,
@@ -141,70 +134,6 @@ func TestReconcile_PhaseSetCorrectly(t *testing.T) {
 			assert.Equal(t, dynatracev1alpha1.Error, dk.Status.Phase)
 		}
 	})
-
-	// arrange
-	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(
-		NewSecret(dkName, namespace, map[string]string{utils.DynatracePaasToken: "42", utils.DynatraceApiToken: "84"}),
-		sampleKubeSystemNS).Build()
-	dtcMock := &dtclient.MockDynatraceClient{}
-	version := "1.187"
-	dtcMock.On("GetLatestAgentVersion", dtclient.OsUnix, dtclient.InstallerTypeDefault).Return(version, nil)
-
-	reconciler := &ReconcileOneAgent{
-		client:    c,
-		apiReader: c,
-		scheme:    scheme.Scheme,
-		logger:    consoleLogger,
-		instance:  &base,
-		feature:   ClassicFeature,
-		dtc:       dtcMock,
-		fullStack: &base.Spec.ClassicFullStack,
-	}
-
-	t.Run("reconcileRollout Phase is set to deploying, if agent version is not set on OneAgent object", func(t *testing.T) {
-		// arrange
-		dk := base.DeepCopy()
-		dk.Status.OneAgent.Version = ""
-		rec := utils.Reconciliation{Log: consoleLogger, Instance: dk}
-
-		// act
-		updateCR, err := reconciler.reconcileRollout(context.TODO(), &rec, dtcMock)
-
-		// assert
-		assert.True(t, updateCR)
-		assert.Equal(t, err, nil)
-		assert.Equal(t, dynatracev1alpha1.Deploying, dk.Status.Phase)
-		assert.Equal(t, version, dk.Status.OneAgent.Version)
-	})
-
-	t.Run("reconcileRollout Phase not changing, if agent version is already set on OneAgent object", func(t *testing.T) {
-		// arrange
-		dk := base.DeepCopy()
-		dk.Status.OneAgent.Version = version
-		dk.Status.Tokens = utils.GetTokensName(dk)
-		rec := utils.Reconciliation{Log: consoleLogger, Instance: dk}
-
-		// act
-		updateCR, err := reconciler.reconcileRollout(context.TODO(), &rec, dtcMock)
-
-		// assert
-		assert.False(t, updateCR)
-		assert.Equal(t, nil, err)
-		assert.Equal(t, dynatracev1alpha1.DynaKubePhaseType(""), dk.Status.Phase)
-	})
-
-	t.Run("reconcileVersion Phase not changing", func(t *testing.T) {
-		// arrange
-		oa := base.DeepCopy()
-		oa.Status.OneAgent.Version = version
-
-		// act
-		_, err := reconciler.reconcileVersion(context.TODO(), consoleLogger, oa, &dynatracev1alpha1.FullStackSpec{}, dtcMock)
-
-		// assert
-		assert.Equal(t, nil, err)
-		assert.Equal(t, dynatracev1alpha1.DynaKubePhaseType(""), oa.Status.Phase)
-	})
 }
 
 func TestReconcile_TokensSetCorrectly(t *testing.T) {
@@ -220,9 +149,9 @@ func TestReconcile_TokensSetCorrectly(t *testing.T) {
 			},
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(
+	c := fake.NewClient(
 		NewSecret(dkName, namespace, map[string]string{utils.DynatracePaasToken: "42", utils.DynatraceApiToken: "84"}),
-		sampleKubeSystemNS).Build()
+		sampleKubeSystemNS)
 	dtcMock := &dtclient.MockDynatraceClient{}
 	version := "1.187"
 	dtcMock.On("GetLatestAgentVersion", dtclient.OsUnix, dtclient.InstallerTypeDefault).Return(version, nil)
@@ -246,11 +175,11 @@ func TestReconcile_TokensSetCorrectly(t *testing.T) {
 		rec := utils.Reconciliation{Log: consoleLogger, Instance: dk}
 
 		// act
-		updateCR, err := reconciler.reconcileRollout(context.TODO(), &rec, dtcMock)
+		updateCR, err := reconciler.reconcileRollout(context.TODO(), &rec)
 
 		// assert
 		assert.True(t, updateCR)
-		assert.Equal(t, utils.GetTokensName(dk), dk.Status.Tokens)
+		assert.Equal(t, dk.Tokens(), dk.Status.Tokens)
 		assert.Equal(t, nil, err)
 	})
 	t.Run("reconcileRollout Tokens status set, if status has wrong name", func(t *testing.T) {
@@ -261,18 +190,18 @@ func TestReconcile_TokensSetCorrectly(t *testing.T) {
 		rec := utils.Reconciliation{Log: consoleLogger, Instance: dk}
 
 		// act
-		updateCR, err := reconciler.reconcileRollout(context.TODO(), &rec, dtcMock)
+		updateCR, err := reconciler.reconcileRollout(context.TODO(), &rec)
 
 		// assert
 		assert.True(t, updateCR)
-		assert.Equal(t, utils.GetTokensName(dk), dk.Status.Tokens)
+		assert.Equal(t, dk.Tokens(), dk.Status.Tokens)
 		assert.Equal(t, nil, err)
 	})
 
 	t.Run("reconcileRollout Tokens status set, not equal to defined name", func(t *testing.T) {
-		c = fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(
+		c = fake.NewClient(
 			NewSecret(dkName, namespace, map[string]string{utils.DynatracePaasToken: "42", utils.DynatraceApiToken: "84"}),
-			sampleKubeSystemNS).Build()
+			sampleKubeSystemNS)
 
 		reconciler := &ReconcileOneAgent{
 			client:    c,
@@ -288,16 +217,16 @@ func TestReconcile_TokensSetCorrectly(t *testing.T) {
 		// arrange
 		customTokenName := "custom-token-name"
 		dk := base.DeepCopy()
-		dk.Status.Tokens = utils.GetTokensName(dk)
+		dk.Status.Tokens = dk.Tokens()
 		dk.Spec.Tokens = customTokenName
 		rec := utils.Reconciliation{Log: consoleLogger, Instance: dk}
 
 		// act
-		updateCR, err := reconciler.reconcileRollout(context.TODO(), &rec, dtcMock)
+		updateCR, err := reconciler.reconcileRollout(context.TODO(), &rec)
 
 		// assert
 		assert.True(t, updateCR)
-		assert.Equal(t, utils.GetTokensName(dk), dk.Status.Tokens)
+		assert.Equal(t, dk.Tokens(), dk.Status.Tokens)
 		assert.Equal(t, customTokenName, dk.Status.Tokens)
 		assert.Equal(t, nil, err)
 	})
@@ -318,15 +247,14 @@ func TestReconcile_InstancesSet(t *testing.T) {
 	}
 
 	// arrange
-	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(
+	c := fake.NewClient(
 		NewSecret(dkName, namespace, map[string]string{utils.DynatracePaasToken: "42", utils.DynatraceApiToken: "84"}),
-		sampleKubeSystemNS).Build()
+		sampleKubeSystemNS)
 	dtcMock := &dtclient.MockDynatraceClient{}
 	version := "1.187"
 	oldVersion := "1.186"
 	hostIP := "1.2.3.4"
 	dtcMock.On("GetLatestAgentVersion", dtclient.OsUnix, dtclient.InstallerTypeDefault).Return(version, nil)
-	dtcMock.On("GetAgentVersionForIP", hostIP).Return(version, nil)
 	dtcMock.On("GetTokenScopes", "42").Return(dtclient.TokenScopes{utils.DynatracePaasToken}, nil)
 	dtcMock.On("GetTokenScopes", "84").Return(dtclient.TokenScopes{utils.DynatraceApiToken}, nil)
 
@@ -354,7 +282,7 @@ func TestReconcile_InstancesSet(t *testing.T) {
 		pod.Labels = buildLabels(dkName, reconciler.feature)
 		pod.Spec = newPodSpecForCR(dk, &dynatracev1alpha1.FullStackSpec{}, reconciler.feature, false, consoleLogger, "cluster1")
 		pod.Status.HostIP = hostIP
-		dk.Status.Tokens = utils.GetTokensName(dk)
+		dk.Status.Tokens = dk.Tokens()
 
 		rec := utils.Reconciliation{Log: consoleLogger, Instance: dk, RequeueAfter: 30 * time.Minute}
 		err := reconciler.client.Create(context.TODO(), pod)
@@ -383,7 +311,7 @@ func TestReconcile_InstancesSet(t *testing.T) {
 		pod.Labels = buildLabels(dkName, reconciler.feature)
 		pod.Spec = newPodSpecForCR(dk, &dynatracev1alpha1.FullStackSpec{}, reconciler.feature, false, consoleLogger, "cluster1")
 		pod.Status.HostIP = hostIP
-		dk.Status.Tokens = utils.GetTokensName(dk)
+		dk.Status.Tokens = dk.Tokens()
 
 		rec := utils.Reconciliation{Log: consoleLogger, Instance: dk, RequeueAfter: 30 * time.Minute}
 		err := reconciler.client.Create(context.TODO(), pod)
