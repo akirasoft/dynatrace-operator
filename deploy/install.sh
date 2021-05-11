@@ -126,11 +126,11 @@ applyOneAgentOperatorSub() {
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
-  name: oneagent-certified
+  name: dynatrace-operator
   namespace: dynatrace
 spec:
   channel: alpha
-  name: oneagent-certified
+  name: dynatrace-operator
   source: certified-operators
   sourceNamespace: openshift-marketplace
 EOF
