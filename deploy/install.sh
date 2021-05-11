@@ -224,6 +224,12 @@ EOF
   echo "----------"
   echo "$dynakube"
   echo "----------"
+  printf "\nWaiting for Dynatrace Operator to be deploy"
+  until kubectl explain DynaKube --api-version=dynatrace.com/v1alpha1 >> /dev/null
+  do
+          echo "Dynatrace Operator not ready yet"
+          sleep 1
+  done
   echo "$dynakube" | "${CLI}" apply -f -
 }
 
