@@ -99,10 +99,41 @@ applyDynatraceOperator() {
   if [ "${CLI}" = "kubectl" ]; then
     "${CLI}" apply -f https://github.com/Dynatrace/dynatrace-operator/releases/latest/download/kubernetes.yaml
   else
-    "${CLI}" apply -f https://raw.githubusercontent.com/akirasoft/dynatrace-operator/master/openshift.yaml
+    printf "\nCreating Dynatrace OneAgent Operator Operator Group...\n"
+    applyOneAgentOperatorOG
+    printf "\nCreating Dynatrace OneAgent Operator Subscription...\n"
+    applyOneAgentOperatorSub
   fi
 
   "${CLI}" -n dynatrace create secret generic dynakube --from-literal="apiToken=${API_TOKEN}" --from-literal="paasToken=${PAAS_TOKEN}" --dry-run -o yaml | "${CLI}" apply -f -
+}
+
+applyOneAgentOperatorOG() {
+  cat <<EOF | "${CLI}" apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: dynatrace-abcd
+  namespace: dynatrace
+spec:
+  targetNamespaces:
+  - dynatrace
+EOF
+}
+
+applyOneAgentOperatorSub() {
+  cat <<EOF | "${CLI}" apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: oneagent-certified
+  namespace: dynatrace
+spec:
+  channel: alpha
+  name: oneagent-certified
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+EOF
 }
 
 buildGlobalSection() {
